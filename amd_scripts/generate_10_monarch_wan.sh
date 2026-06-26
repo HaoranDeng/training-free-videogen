@@ -5,7 +5,7 @@
 #SBATCH -e out/job.%j.err
 #SBATCH -N 1
 #SBATCH -n 8
-#SBATCH -t 4:00:00
+#SBATCH -t 00:30:00
 #SBATCH -p mi3001x
 
 set -euo pipefail
@@ -46,4 +46,3 @@ python generate.py \
   --output_dir "${OUTPUT_DIR}" \
   --num_videos 10 \
   --use_ema
-
