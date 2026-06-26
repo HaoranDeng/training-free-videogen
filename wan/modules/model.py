@@ -268,7 +268,10 @@ class WanSelfAttention(nn.Module):
             return q, k, v
 
         q, k, v = qkv_fn(x)
+        # q/k/v: [batch, sequence, head, head_dim].
+        # Default 480p/81-frame Wan: [B, 21 * 30 * 52, H, D].
         roped_query, roped_key = apply_rope_video_tokens(q, k, rope_cache)
+        # roped_query/roped_key keep [batch, sequence, head, head_dim].
         maybe_save_first_attention_qkv(roped_query, roped_key, v, "wan_self_attn")
 
         if self.enable_monarch:

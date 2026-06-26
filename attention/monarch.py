@@ -64,8 +64,11 @@ def _from_monarch_blocks(x, f_tied, h_reduce, w_reduce):
 
 
 def _one_step_monarch_chunk(q, k, v, scale, q_init):
-    # q:   [B, A, I, J, H, D]
-    # k/v: [B, F, K, L, H, D]
+    # q:   [B, A, I, J, H, D] = [batch, query_outer, query_row, query_column, head, dim]
+    # k/v: [B, F, K, L, H, D] = [batch, key_outer, key_row, key_column, head, dim]
+    # Default 480p/81-frame Wan after Monarch rearrange:
+    #   q:   [B, 21, 30, 52, H, D]
+    #   k/v: [B, 21, 30, 52, H, D]
     #
     # For each fixed (A, F, J, K), this approximates the dense [I x L]
     # attention tile as left_factor[:, None] * right_factor[None, :].
@@ -102,6 +105,9 @@ def _one_step_monarch_chunk(q, k, v, scale, q_init):
 
 
 def _one_step_monarch(q, k, v, scale, query_outer_chunk, q_init):
+    # q/k/v are already Monarch blocks:
+    #   q:   [B, query_outer, query_row, query_column, head, dim]
+    #   k/v: [B, key_outer, key_row, key_column, head, dim]
     out = torch.empty(
         q.size(0),
         q.size(1),
@@ -139,6 +145,12 @@ def monarch_attn(
     query_outer_chunk=None,
 ):
     """One-step Monarch self-attention for Wan video tokens."""
+    # Incoming q/k/v from Wan self-attention:
+    #   q/k/v: [batch, sequence, head, dim]
+    # Default 480p/81-frame Wan:
+    #   sequence = frame * height * width = 21 * 30 * 52 = 32760.
+    # After _to_monarch_blocks:
+    #   q/k/v: [batch, 21, 30, 52, head, dim]
     if q.size(1) != k.size(1) or k.size(1) != v.size(1):
         raise ValueError("Monarch attention expects self-attention q/k/v lengths to match.")
 
