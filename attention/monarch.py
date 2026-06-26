@@ -2,7 +2,7 @@ import torch
 from einops import rearrange
 
 
-def _initial_right_query(q, key_rows, q_init):
+def _select_merge_queries(q, key_rows, q_init):
     # q is [batch, query_outer, query_row, query_column, head, dim].
     # For default Wan 480p/81-frame generation: [B, 21, 30, 52, H, D].
     q_init = (q_init or "ith").lower()
@@ -63,48 +63,71 @@ def _from_monarch_blocks(x, f_tied, h_reduce, w_reduce):
     ).contiguous()
 
 
-def _one_step_monarch_chunk(q, k, v, scale, q_init):
+def _merge_key_column_tokens(merge_query, k, v):
+    # For each fixed (query_outer, key_outer, query_column, key_row), merge
+    # the key_column tokens into one merged key token and one merged value token.
+    merge_logits = torch.einsum("bakjhd,bfklhd->bhafkjl", merge_query, k)
+    merge_logits = merge_logits.float()
+    merge_logits = merge_logits - merge_logits.amax(dim=-1, keepdim=True)
+    merge_weights = torch.softmax(merge_logits, dim=-1).to(k.dtype)
+
+    merged_keys = torch.einsum("bhafkjl,bfklhd->bafjkhd", merge_weights, k)
+    merged_values = torch.einsum("bhafkjl,bfklhe->bafjkhe", merge_weights, v)
+
+    # Correction term from the merge softmax normalizer. It keeps this rewrite
+    # exactly equivalent to the previous one-step Monarch implementation.
+    merge_log_z = torch.logsumexp(merge_logits, dim=-1, keepdim=True)
+    routing_bias = (
+        merge_weights * (merge_logits - merge_log_z)
+    ).sum(dim=-1, keepdim=True).transpose(-2, -3)
+    return merged_keys, merged_values, routing_bias
+
+
+def _route_queries_to_merged_tokens(q, merged_keys, routing_bias, key_outer, key_rows):
+    # Each query row attends to all merged tokens indexed by key_outer x key_row.
+    routing_logits = torch.einsum("bafjkhd,baijhd->bhafjki", merged_keys, q)
+    routing_logits = routing_logits - routing_bias
+    routing_weights = rearrange(routing_logits, "b h a f j k i -> b h a j i (f k)")
+    routing_weights = torch.softmax(routing_weights.float(), dim=-1).to(q.dtype)
+    return rearrange(
+        routing_weights,
+        "b h a j i (f k) -> b h a f j k i",
+        f=key_outer,
+        k=key_rows,
+    )
+
+
+def _one_step_token_merging_chunk(q, k, v, scale, q_init):
     # q:   [B, A, I, J, H, D] = [batch, query_outer, query_row, query_column, head, dim]
     # k/v: [B, F, K, L, H, D] = [batch, key_outer, key_row, key_column, head, dim]
     # Default 480p/81-frame Wan after Monarch rearrange:
     #   q:   [B, 21, 30, 52, H, D]
     #   k/v: [B, 21, 30, 52, H, D]
     #
-    # For each fixed (A, F, J, K), this approximates the dense [I x L]
-    # attention tile as left_factor[:, None] * right_factor[None, :].
+    # For each fixed (A, F, J, K), key-column tokens L are merged into one
+    # token. Query rows I are then routed to those merged tokens.
     scale_sqrt = scale**0.5
     q_scaled = q * scale_sqrt
     k_scaled = k * scale_sqrt
     key_outer, key_rows = k.size(1), k.size(2)
 
-    right_query = _initial_right_query(q_scaled, key_rows, q_init)
-    right_logits = torch.einsum("bakjhd,bfklhd->bhafkjl", right_query, k_scaled)
-    right_logits = right_logits.float()
-    right_logits = right_logits - right_logits.amax(dim=-1, keepdim=True)
-    right_factor = torch.softmax(right_logits, dim=-1).to(q.dtype)
-
-    key_summary = torch.einsum("bhafkjl,bfklhd->bafjkhd", right_factor, k_scaled)
-    right_log_z = torch.logsumexp(right_logits, dim=-1, keepdim=True)
-    left_correction = (
-        right_factor * (right_logits - right_log_z)
-    ).sum(dim=-1, keepdim=True).transpose(-2, -3)
-
-    left_logits = torch.einsum("bafjkhd,baijhd->bhafjki", key_summary, q_scaled)
-    left_logits = left_logits - left_correction
-    left_factor = rearrange(left_logits, "b h a f j k i -> b h a j i (f k)")
-    left_factor = torch.softmax(left_factor.float(), dim=-1).to(q.dtype)
-    left_factor = rearrange(
-        left_factor,
-        "b h a j i (f k) -> b h a f j k i",
-        f=key_outer,
-        k=key_rows,
+    merge_query = _select_merge_queries(q_scaled, key_rows, q_init)
+    merged_keys, merged_values, routing_bias = _merge_key_column_tokens(
+        merge_query,
+        k_scaled,
+        v,
     )
+    routing_weights = _route_queries_to_merged_tokens(
+        q_scaled,
+        merged_keys,
+        routing_bias,
+        key_outer,
+        key_rows,
+    )
+    return torch.einsum("bhafjki,bafjkhe->baijhe", routing_weights, merged_values)
 
-    values_by_tile = torch.einsum("bhafkjl,bfklhe->bafjkhe", right_factor, v)
-    return torch.einsum("bhafjki,bafjkhe->baijhe", left_factor, values_by_tile)
 
-
-def _one_step_monarch(q, k, v, scale, query_outer_chunk, q_init):
+def _token_merging_attention(q, k, v, scale, query_outer_chunk, q_init):
     # q/k/v are already Monarch blocks:
     #   q:   [B, query_outer, query_row, query_column, head, dim]
     #   k/v: [B, key_outer, key_row, key_column, head, dim]
@@ -121,7 +144,7 @@ def _one_step_monarch(q, k, v, scale, query_outer_chunk, q_init):
 
     for start in range(0, q.size(1), query_outer_chunk):
         end = min(start + query_outer_chunk, q.size(1))
-        out[:, start:end] = _one_step_monarch_chunk(
+        out[:, start:end] = _one_step_token_merging_chunk(
             q[:, start:end],
             k,
             v,
@@ -144,7 +167,7 @@ def monarch_attn(
     q_init=None,
     query_outer_chunk=None,
 ):
-    """One-step Monarch self-attention for Wan video tokens."""
+    """One-step Monarch self-attention written as token merging plus routing."""
     # Incoming q/k/v from Wan self-attention:
     #   q/k/v: [batch, sequence, head, dim]
     # Default 480p/81-frame Wan:
@@ -162,7 +185,7 @@ def monarch_attn(
     k_blocks = _to_monarch_blocks(k, f_tied, h_reduce, w_reduce, h, w)
     v_blocks = _to_monarch_blocks(v, f_tied, h_reduce, w_reduce, h, w)
 
-    out = _one_step_monarch(
+    out = _token_merging_attention(
         q_blocks,
         k_blocks,
         v_blocks,
