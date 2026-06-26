@@ -19,30 +19,20 @@ __all__ = ['WanModel']
 _FIRST_QKV_SAVED = False
 
 
-def dense_attention_reference(q, k, v, block_causal_size=None):
+def dense_attention_reference(q, k, v):
     q = q.transpose(1, 2)
     k = k.transpose(1, 2)
     v = v.transpose(1, 2)
-    attn_mask = None
-    if block_causal_size is not None:
-        lq, lk = q.size(-2), k.size(-2)
-        q_block = torch.arange(lq, device=q.device).div(
-            block_causal_size, rounding_mode='floor').unsqueeze(1)
-        k_block = torch.arange(lk, device=q.device).div(
-            block_causal_size, rounding_mode='floor').unsqueeze(0)
-        allow = k_block <= q_block
-        attn_mask = torch.zeros(1, 1, lq, lk, device=q.device, dtype=q.dtype)
-        attn_mask = attn_mask.masked_fill(~allow, float('-inf'))
     x = torch.nn.functional.scaled_dot_product_attention(
-        q, k, v, attn_mask=attn_mask, dropout_p=0.0, is_causal=False)
+        q, k, v, dropout_p=0.0, is_causal=False)
     return x.transpose(1, 2).contiguous()
 
 
-def maybe_print_dense_attention_mae(tag, actual, q, k, v, enabled, block_causal_size=None):
+def maybe_print_dense_attention_mae(tag, actual, q, k, v, enabled):
     if not enabled:
         return
     with torch.no_grad():
-        ref = dense_attention_reference(q, k, v, block_causal_size=block_causal_size)
+        ref = dense_attention_reference(q, k, v)
         abs_err = (actual.float() - ref.float()).abs()
         mae = abs_err.mean()
         rel_mae = mae / ref.float().abs().mean().clamp(min=1e-8) * 100
@@ -276,7 +266,6 @@ class WanSelfAttention(nn.Module):
         self.monarch_q_init = None
         self.monarch_random_seed = None
         self.monarch_query_outer_chunk = None
-        self.monarch_tile_axes = None
         self.monarch_compare_to_dense = False
 
         # layers
@@ -327,7 +316,6 @@ class WanSelfAttention(nn.Module):
                 q_init=self.monarch_q_init,
                 random_seed=self.monarch_random_seed,
                 query_outer_chunk=self.monarch_query_outer_chunk,
-                tile_axes=self.monarch_tile_axes,
             )
             maybe_print_dense_attention_mae(
                 "monarch", x, roped_query, roped_key, v,
@@ -817,7 +805,6 @@ class WanModel(ModelMixin, ConfigMixin):
         q_init = args.get("q_init", None)
         random_seed = args.get("random_seed", None)
         query_outer_chunk = args.get("query_outer_chunk", None)
-        tile_axes = args.get("tile_axes", None)
         compare_to_dense = args.get("compare_to_dense", False)
 
         for block in self.blocks:
@@ -829,7 +816,6 @@ class WanModel(ModelMixin, ConfigMixin):
             block.self_attn.monarch_q_init = q_init
             block.self_attn.monarch_random_seed = random_seed
             block.self_attn.monarch_query_outer_chunk = query_outer_chunk
-            block.self_attn.monarch_tile_axes = tile_axes
             block.self_attn.monarch_compare_to_dense = compare_to_dense
 
     def _set_gradient_checkpointing(self, module, value=False):
