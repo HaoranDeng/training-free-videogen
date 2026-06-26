@@ -58,7 +58,9 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"Loading Wan2.1 + MonarchAttention on {device} with dtype={dtype}.")
+    monarch_enabled = bool(config.get("monarch_args", {}).get("enable", False))
+    attention_mode = "MonarchAttention" if monarch_enabled else "dense SDPA attention"
+    print(f"Loading Wan2.1 + {attention_mode} on {device} with dtype={dtype}.")
     pipeline = MonarchWanPipeline(config, device=device)
     load_generator_checkpoint(pipeline, args.checkpoint, args.use_ema)
     pipeline = pipeline.to(dtype=dtype)
@@ -89,4 +91,3 @@ def main():
 if __name__ == "__main__":
     os.environ.setdefault("MONARCH_FORCE_TORCH_RMSNORM", "1")
     main()
-
