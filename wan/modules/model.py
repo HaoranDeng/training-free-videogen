@@ -19,31 +19,6 @@ __all__ = ['WanModel']
 _FIRST_QKV_SAVED = False
 
 
-def dense_attention_reference(q, k, v):
-    q = q.transpose(1, 2)
-    k = k.transpose(1, 2)
-    v = v.transpose(1, 2)
-    x = torch.nn.functional.scaled_dot_product_attention(
-        q, k, v, dropout_p=0.0, is_causal=False)
-    return x.transpose(1, 2).contiguous()
-
-
-def maybe_print_dense_attention_mae(tag, actual, q, k, v, enabled):
-    if not enabled:
-        return
-    with torch.no_grad():
-        ref = dense_attention_reference(q, k, v)
-        abs_err = (actual.float() - ref.float()).abs()
-        mae = abs_err.mean()
-        rel_mae = mae / ref.float().abs().mean().clamp(min=1e-8) * 100
-    if (not dist.is_initialized()) or dist.get_rank() == 0:
-        print(
-            f"[compare_to_dense] {tag}: mae={mae.item():.4f} "
-            f"rel_mae={rel_mae.item():.4f}% "
-            f"shape={tuple(actual.shape)}"
-        )
-
-
 def maybe_save_first_attention_qkv(q, k, v, tag):
     global _FIRST_QKV_SAVED
     path = os.environ.get("MONARCHRT_SAVE_FIRST_QKV_PATH")
@@ -259,14 +234,12 @@ class WanSelfAttention(nn.Module):
         self.eps = eps
 
         self.enable_monarch = False
-        self.monarch_num_iters = 1
         self.monarch_h_reduce = 1
         self.monarch_w_reduce = 1
         self.monarch_f_tied = 1
         self.monarch_q_init = None
         self.monarch_random_seed = None
         self.monarch_query_outer_chunk = None
-        self.monarch_compare_to_dense = False
 
         # layers
         self.q = nn.Linear(dim, dim)
@@ -312,14 +285,10 @@ class WanSelfAttention(nn.Module):
                 self.monarch_w_reduce,
                 h,
                 w,
-                num_iters=self.monarch_num_iters,
                 q_init=self.monarch_q_init,
                 random_seed=self.monarch_random_seed,
                 query_outer_chunk=self.monarch_query_outer_chunk,
             )
-            maybe_print_dense_attention_mae(
-                "monarch", x, roped_query, roped_key, v,
-                self.monarch_compare_to_dense)
         else:
             x = flash_attention(
                 q=roped_query,
@@ -798,25 +767,21 @@ class WanModel(ModelMixin, ConfigMixin):
     def monarch_args(self, args: dict):
         self._monarch_args = args
         enable = args.get("enable", False)
-        num_iters = args.get("num_iters", 1)
         f_tied = args.get("f_tied", 1)
         h_reduce = args.get("h_reduce", 1)
         w_reduce = args.get("w_reduce", 1)
         q_init = args.get("q_init", None)
         random_seed = args.get("random_seed", None)
         query_outer_chunk = args.get("query_outer_chunk", None)
-        compare_to_dense = args.get("compare_to_dense", False)
 
         for block in self.blocks:
             block.self_attn.enable_monarch = enable
-            block.self_attn.monarch_num_iters = num_iters
             block.self_attn.monarch_f_tied = f_tied
             block.self_attn.monarch_h_reduce = h_reduce
             block.self_attn.monarch_w_reduce = w_reduce
             block.self_attn.monarch_q_init = q_init
             block.self_attn.monarch_random_seed = random_seed
             block.self_attn.monarch_query_outer_chunk = query_outer_chunk
-            block.self_attn.monarch_compare_to_dense = compare_to_dense
 
     def _set_gradient_checkpointing(self, module, value=False):
         self.gradient_checkpointing = value

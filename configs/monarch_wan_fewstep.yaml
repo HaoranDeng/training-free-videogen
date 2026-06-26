@@ -15,10 +15,8 @@ model_kwargs:
   timestep_shift: 5.0
 monarch_args:
   enable: true
-  num_iters: 1
   f_tied: 1
   h_reduce: 1
   w_reduce: 1
   q_init: ith
   random_seed: 0
-

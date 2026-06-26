@@ -8,8 +8,8 @@ q, k, v: [batch, sequence, head, dim]
 out:     [batch, sequence, head, dim]
 ```
 
-`monarch.py` is the MonarchAttention path. For default 480p/81-frame Wan
-generation, the sequence is rearranged into:
+`monarch.py` is the one-step MonarchAttention path. For default 480p/81-frame
+Wan generation, the sequence is rearranged into:
 
 ```text
 q: [batch, query_outer=21, query_row=30, query_column=52, head, dim]
@@ -25,6 +25,12 @@ a rank-1 product:
 left_factor:  [30]
 right_factor: [52]
 tile ~= left_factor[:, None] * right_factor[None, :]
+```
+
+The only approximation step is:
+
+```text
+initialize right query -> right_factor -> left_factor -> value aggregation
 ```
 
 The easiest experimental hook is `q_init` in `_initial_right_query`:
