@@ -2,23 +2,7 @@ import torch
 from einops import rearrange
 
 
-def _rand_indices(num_choices, num_indices, device, seed):
-    if seed is None:
-        return torch.randint(num_choices, (num_indices,), device=device)
-
-    try:
-        generator = torch.Generator(device=device)
-    except (TypeError, RuntimeError):
-        generator = torch.Generator()
-    generator.manual_seed(int(seed))
-
-    try:
-        return torch.randint(num_choices, (num_indices,), device=device, generator=generator)
-    except RuntimeError:
-        return torch.randint(num_choices, (num_indices,), generator=generator).to(device)
-
-
-def _initial_right_query(q, key_rows, q_init, random_seed):
+def _initial_right_query(q, key_rows, q_init):
     # q is [batch, query_outer, query_row, query_column, head, dim].
     # For default Wan 480p/81-frame generation: [B, 21, 30, 52, H, D].
     q_init = (q_init or "ith").lower()
@@ -34,11 +18,7 @@ def _initial_right_query(q, key_rows, q_init, random_seed):
     if q_init in {"first", "1st"}:
         return q[:, :, :1].expand(-1, -1, key_rows, -1, -1, -1)
 
-    if q_init == "random":
-        indices = _rand_indices(q.size(2), key_rows, q.device, random_seed)
-        return q.index_select(2, indices)
-
-    raise ValueError(f"unsupported q_init={q_init!r}; expected mean, random, 1st, or ith.")
+    raise ValueError(f"unsupported q_init={q_init!r}; expected mean, 1st, or ith.")
 
 
 def _to_monarch_blocks(x, f_tied, h_reduce, w_reduce, height, width):
@@ -83,7 +63,7 @@ def _from_monarch_blocks(x, f_tied, h_reduce, w_reduce):
     ).contiguous()
 
 
-def _one_step_monarch_chunk(q, k, v, scale, q_init, random_seed):
+def _one_step_monarch_chunk(q, k, v, scale, q_init):
     # q:   [B, A, I, J, H, D]
     # k/v: [B, F, K, L, H, D]
     #
@@ -94,7 +74,7 @@ def _one_step_monarch_chunk(q, k, v, scale, q_init, random_seed):
     k_scaled = k * scale_sqrt
     key_outer, key_rows = k.size(1), k.size(2)
 
-    right_query = _initial_right_query(q_scaled, key_rows, q_init, random_seed)
+    right_query = _initial_right_query(q_scaled, key_rows, q_init)
     right_logits = torch.einsum("bakjhd,bfklhd->bhafkjl", right_query, k_scaled)
     right_logits = right_logits.float()
     right_logits = right_logits - right_logits.amax(dim=-1, keepdim=True)
@@ -121,7 +101,7 @@ def _one_step_monarch_chunk(q, k, v, scale, q_init, random_seed):
     return torch.einsum("bhafjki,bafjkhe->baijhe", left_factor, values_by_tile)
 
 
-def _one_step_monarch(q, k, v, scale, query_outer_chunk, q_init, random_seed):
+def _one_step_monarch(q, k, v, scale, query_outer_chunk, q_init):
     out = torch.empty(
         q.size(0),
         q.size(1),
@@ -141,7 +121,6 @@ def _one_step_monarch(q, k, v, scale, query_outer_chunk, q_init, random_seed):
             v,
             scale,
             q_init,
-            random_seed,
         )
     return out
 
@@ -157,7 +136,6 @@ def monarch_attn(
     w,
     sm_scale=None,
     q_init=None,
-    random_seed=None,
     query_outer_chunk=None,
 ):
     """One-step Monarch self-attention for Wan video tokens."""
@@ -179,7 +157,6 @@ def monarch_attn(
         scale=sm_scale,
         query_outer_chunk=query_outer_chunk,
         q_init=q_init,
-        random_seed=random_seed,
     )
     return _from_monarch_blocks(out, f_tied, h_reduce, w_reduce)
 

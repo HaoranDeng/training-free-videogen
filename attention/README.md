@@ -38,4 +38,3 @@ The easiest experimental hook is `q_init` in `_initial_right_query`:
 - `ith`: key row `i` initializes with query row `i`
 - `mean`: every key row initializes with the mean query
 - `1st`: every key row initializes with the first query row
-- `random`: each key row initializes with a random query row

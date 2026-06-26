@@ -19,4 +19,3 @@ monarch_args:
   h_reduce: 1
   w_reduce: 1
   q_init: ith
-  random_seed: 0

@@ -238,7 +238,6 @@ class WanSelfAttention(nn.Module):
         self.monarch_w_reduce = 1
         self.monarch_f_tied = 1
         self.monarch_q_init = None
-        self.monarch_random_seed = None
         self.monarch_query_outer_chunk = None
 
         # layers
@@ -286,7 +285,6 @@ class WanSelfAttention(nn.Module):
                 h,
                 w,
                 q_init=self.monarch_q_init,
-                random_seed=self.monarch_random_seed,
                 query_outer_chunk=self.monarch_query_outer_chunk,
             )
         else:
@@ -771,7 +769,6 @@ class WanModel(ModelMixin, ConfigMixin):
         h_reduce = args.get("h_reduce", 1)
         w_reduce = args.get("w_reduce", 1)
         q_init = args.get("q_init", None)
-        random_seed = args.get("random_seed", None)
         query_outer_chunk = args.get("query_outer_chunk", None)
 
         for block in self.blocks:
@@ -780,7 +777,6 @@ class WanModel(ModelMixin, ConfigMixin):
             block.self_attn.monarch_h_reduce = h_reduce
             block.self_attn.monarch_w_reduce = w_reduce
             block.self_attn.monarch_q_init = q_init
-            block.self_attn.monarch_random_seed = random_seed
             block.self_attn.monarch_query_outer_chunk = query_outer_chunk
 
     def _set_gradient_checkpointing(self, module, value=False):
