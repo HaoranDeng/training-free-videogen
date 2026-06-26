@@ -105,10 +105,10 @@ def _softmax_right(right_query, key, normalizer):
     return torch.softmax(logits, dim=-1).to(key.dtype), logits
 
 
-def _softmax_left(logits, key_outer, key_rows):
+def _softmax_left(logits, key_outer, key_rows, out_dtype):
     # Softmax over all key_outer x key_row choices for each query row.
     probs = rearrange(logits, "b h a f j k i -> b h a j i (f k)")
-    probs = torch.softmax(probs.float(), dim=-1).to(logits.dtype)
+    probs = torch.softmax(probs.float(), dim=-1).to(out_dtype)
     return rearrange(
         probs,
         "b h a j i (f k) -> b h a f j k i",
@@ -154,6 +154,7 @@ def _monarch_attention_chunk(q, k, v, scale, q_init, random_seed, num_iters):
             left_logits - left_correction,
             key_outer=key_outer,
             key_rows=key_rows,
+            out_dtype=q.dtype,
         )
 
         if step == num_iters - 1:
